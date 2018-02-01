@@ -1,0 +1,314 @@
+#!/bin/env python3
+# Copyright (C) 2018 Justus Piater
+
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3 or any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see http://www.gnu.org/licenses/
+
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+import argparse
+import sys
+import bibtexparser
+import getpass
+import requests
+from pathlib import Path
+import json
+
+
+## Class Publication
+## From parsed BibTeX entry (bibentry), create Zenodo-ready dictionary
+
+class PublicationException(Exception):
+    def __init__(self, bibentry, exception):
+        self.bibentry = bibentry
+        self.exception = exception
+
+class Publication:
+    def __init__(self, bibentry):
+        self.bibentry = bibentry
+        self.data = self.init_metadata()
+        self.create_publication()
+
+    def warn(self, msg):
+        if not args.quiet:
+            print("WARNING:", self.bibentry['ID'] + ":", msg)
+
+    def init_metadata(self):
+        def format_person(person):
+            if "," in person:
+                return person
+            else:
+                *words, lastword = person.split()
+                return lastword + ", " + " ".join(words)
+
+        data = {}
+        data['metadata'] = {}
+        data['metadata']['upload_type'] = 'publication'
+
+        if not 'day'   in self.bibentry or \
+           not 'month' in self.bibentry or \
+           not 'year'  in self.bibentry:
+            self.warn("date incomplete or absent")
+        if 'year' in self.bibentry:
+            data['metadata']['publication_date'] = \
+                '{:04d}'.format(int(self.bibentry['year']))
+            if 'month' in self.bibentry:
+                data['metadata']['publication_date'] += \
+                    '-{:02d}'.format(int(self.bibentry['month']))
+                if 'day' in self.bibentry:
+                    data['metadata']['publication_date'] += \
+                        '-{:02d}'.format(int(self.bibentry['day']))
+
+        data['metadata']['title'] = self.bibentry['title']
+
+        data['metadata']['creators'] = \
+            [{'name': format_person(person)}
+             for person in self.bibentry['author'].split(" and ")]
+        if 'authors' in config:
+            for author in data['metadata']['creators']:
+                if author['name'] in config['authors']:
+                    for field in ['affiliation', 'orcid']:
+                        fields = config['authors'][author['name']]
+                        if field in fields:
+                            author[field] = fields[field]
+
+        if 'abstract' in self.bibentry:
+            data['metadata']['description'] = self.bibentry['abstract']
+        else:
+            if 'note' in self.bibentry:
+                data['metadata']['description'] = self.bibentry['note']
+                del self.bibentry['note']
+                self.warn("no abstract; using note as description")
+            else:
+                self.warn("no abstract, no note: no description")
+                data['metadata']['description'] = "GIVE DESCRIPTION"
+
+        data['metadata']['access_right'] = args.access
+
+        if 'doi' in self.bibentry:
+            data['metadata']['doi'] = self.bibentry['doi']
+        else:
+            self.warn("Zenodo will irreversibly create a DOI")
+
+        if 'keyword' in self.bibentry:
+            data['metadata']['keywords'] = \
+                [k for k in self.bibentry['keyword'].split(",")]
+
+        if 'note' in self.bibentry:
+            data['metadata']['notes'] = self.bibentry['note']
+
+        if 'link' in self.bibentry:
+            data['metadata']['related_identifiers'] = \
+                [{'identifier': self.bibentry['link'],
+                  'relation': 'isIdenticalTo'}]
+
+        if len(args.EC):
+            data['metadata']['grants'] = \
+                [{'id': '10.13039/501100000780::' + g} for g in args.EC]
+
+        if 'publisher' in self.bibentry:
+            data['metadata']['imprint_publisher'] = self.bibentry['publisher']
+        if 'address' in self.bibentry:
+            data['metadata']['imprint_place'] = self.bibentry['address']
+        return data
+
+    def create_article(self):
+        self.data['metadata']['publication_type'] = 'article'
+        self.data['metadata']['journal_title'] = self.bibentry['journal']
+        self.data['metadata']['journal_volume'] = self.bibentry['volume']
+        if 'number' in self.bibentry:
+            self.data['metadata']['journal_issue'] = self.bibentry['number']
+        self.data['metadata']['journal_pages'] = self.bibentry['pages']
+
+    def create_inproceedings(self):
+        self.data['metadata']['publication_type'] = 'conferencepaper'
+        self.data['metadata']['conference_title'] = self.bibentry['booktitle']
+        self.data['metadata'][    'partof_title'] = self.bibentry['booktitle']
+        if 'pages' in self.bibentry:
+            self.data['metadata']['partof_pages'] = self.bibentry['pages']
+
+    def create_incollection(self):
+        self.data['metadata']['publication_type'] = 'section'
+        self.data['metadata'][    'partof_title'] = self.bibentry['booktitle']
+        if 'pages' in self.bibentry:
+            self.data['metadata']['partof_pages'] = self.bibentry['pages']
+
+    def create_phdthesis(self):
+        self.data['metadata']['publication_type'] = 'thesis'
+        self.data['metadata']['thesis_university'] = 'school'
+
+    def create_misc(self):
+        self.data['metadata']['publication_type'] = 'other'
+
+    def create_techreport(self):
+        self.data['metadata']['publication_type'] = 'technicalnote'
+
+    def create_publication(self):
+        try:
+            eval('self.create_' + self.bibentry['ENTRYTYPE'] + '()')
+        except Exception as e:
+            raise PublicationException(self.bibentry, e)
+
+
+## Class Zenodo
+## Interact with Zenodo via its HTTP Request API
+
+class ZenodoException(Exception):
+    def __init__(self, json):
+        self.json = json
+    
+class Zenodo:
+    def __init__(self, token, test=False):
+        self.test = test
+        self.url = 'https://' + ('sandbox.' if args.test else '') + \
+                   'zenodo.org/api/deposit/depositions'
+        self.weburl = 'https://' + ('sandbox.' if args.test else '') + \
+                      'zenodo.org/deposit?status=draft'
+        self.headers = {'Content-Type': 'application/json'}
+        self.params = {'access_token': token}
+
+    def upload_data(self, data):
+        r = requests.post(self.url, params=self.params, headers=self.headers,
+                          json=data)
+        if r.status_code != 201:
+            raise ZenodoException(r.json())
+        return r
+
+    def upload_pdf(self, depid, pdf):
+        r = requests.post(self.url + '/%s/files' % depid, params=self.params,
+                          data={'filename': pdf.parts[-1]},
+                          files={'file': pdf.open(mode='rb')})
+        if r.status_code != 201:
+            raise ZenodoException(r.json())
+        return r
+
+    
+## Global helper methods:
+
+def getpdf(bibentry):   # attempt do download PDF from url in bibentry
+    if not 'link' in publication.bibentry:
+        return False
+    url = publication.bibentry['link']
+    *elems, ext = url.split('.')
+    if ext.lower() != 'pdf':
+        return False
+
+    *elems, pdf = url.split('/')
+    pdf = Path(args.pdfdir, pdf)
+    if not pdf.exists():
+        print("downloading", pdf)
+        r = requests.get(url)
+        if r.status_code != 200:
+            print("ERROR: failed to download", url, r.status_code)
+            return False
+        with open(pdf, 'wb') as file:
+            file.write(r.content)
+    return pdf
+
+
+def clean_bibrecord(record): # passed to BibTeX parser
+    record = bibtexparser.customization.convert_to_unicode(record)
+    for val in record:
+        record[val] = record[val].replace('\n', ' ')
+        record[val] = record[val].replace('---', '—')
+        record[val] = record[val].replace('--', '–')
+    return record
+
+
+def skipalert(bibentry, msg):
+    if not args.quiet:
+        print("SKIPPING", bibentry['ID'] + ":", msg)
+
+
+## Get going:
+
+argparser = argparse.ArgumentParser()
+argparser.add_argument('-c', '--config', metavar="path/to/config.json")
+argparser.add_argument('-t', '--token',
+                       help="Zenodo access token; will prompt if not given")
+argparser.add_argument('-a', '--access',
+                       choices=['open', 'embargoed', 'restricted', 'closed'],
+                       default='closed', help="access right (open='gold')")
+argparser.add_argument('-l', '--label', action='append', metavar="BibTeX_label",
+                       help="BibTeX entry labels to be imported "
+                       "(can be specified multiple times; "
+                       "if none given, all are imported)")
+argparser.add_argument('-EC', action='append', metavar="grant_number",
+                       help="European Commission grant number (can be "
+                       "specified multiple times)")
+argparser.add_argument('-p', '--pdfdir',
+                       help="download/storage directory for PDFs; if not "
+                       "given, PDFs will not be considered")
+argparser.add_argument('-T', '--test', action='store_true',
+                       help="use Zenodo testing sandbox")
+argparser.add_argument('-q', '--quiet', action='store_true',
+                       help="suppress warning messages")
+argparser.add_argument('bibfile', type=str, help='path/to/file.bib')
+args = argparser.parse_args()
+
+config = {}
+if not args.config:
+    defaultconfig = Path(Path.home(), '.config',
+                         'zenodo-import-bibtex', 'config.json')
+    if defaultconfig.exists():
+        args.config = defaultconfig
+if args.config:
+    with open(args.config) as configfile:
+        config = json.load(configfile)
+
+
+## Parse BibTeX file:
+
+with open(args.bibfile) as bibfile:
+    parser = bibtexparser.bparser.BibTexParser()
+    parser.customization = clean_bibrecord
+    bib = bibtexparser.load(bibfile, parser=parser)
+
+
+## Create a list of Publication's to upload:
+
+publications = []
+for bibentry in bib.entries:
+    if not args.label or bibentry['ID'] in args.label:
+        if bibentry['ENTRYTYPE'] == 'unpublished':
+            skipalert(bibentry, "unpublished")
+        elif not 'author' in bibentry:
+            skipalert(bibentry, "no authors")
+        else:
+            publications.append(Publication(bibentry))
+
+if not publications:
+    print("No BibTeX entries to be exported")
+    sys.exit(0)
+
+if input("Proceed to upload to Zenodo? [y/n] ") != "y":
+    sys.exit(0)
+
+    
+## Upload the list of Publication's to Zenodo, optionally along with their PDFs:
+
+z_access_token = args.token if args.token else \
+                 getpass.getpass("Zenodo" + (" Sandbox" if args.test else "") +
+                                 " Access Token: ")
+
+z = Zenodo(z_access_token, args.test)
+for publication in publications:
+    print("uploading " + publication.bibentry['ID'])
+    r = z.upload_data(publication.data)
+    if args.pdfdir:
+        pdf = getpdf(publication.bibentry)
+        if pdf:
+            print("uploading", pdf)
+            z.upload_pdf(r.json()['id'], pdf)
+
+## Done!
+print("Now, check/delete/publish the uploads here:\n" + z.weburl)
