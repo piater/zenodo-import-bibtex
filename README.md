@@ -37,7 +37,7 @@ exists), which may hold the following information:
   * author affiliations and ORCIDs
   * options corresponding to long command-line argument names
 
-See the example configuratin file supplied.
+See the example configuration file supplied.
 
 
 ## State of this Project ##
