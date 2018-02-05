@@ -28,9 +28,16 @@ use of the following:
     will take it from the directory specified via `-p`, or, if not
     found there, will attempt to download the `url`.
 
-Author affiliations and ORCIDs can be read from a configuration file
-(`$HOME/.config/zenodo-import-bibtex/config.json` by default); see the
-example supplied.
+## Configuration File ##
+
+A configuration file can be specified
+(`$HOME/.config/zenodo-import-bibtex/config.json` by default, if it
+exists), which may hold the following information:
+
+  * author affiliations and ORCIDs
+  * options corresponding to long command-line argument names
+
+See the example configuratin file supplied.
 
 
 ## State of this Project ##

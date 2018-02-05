@@ -264,6 +264,11 @@ if not args.config:
 if args.config:
     with open(args.config) as configfile:
         config = json.load(configfile)
+    if 'args' in config:
+        for arg in config['args']:
+            if not getattr(args, arg):
+                setattr(args, arg, config['args'][arg])
+                print("using from", str(args.config) + ":", arg)
 
 
 ## Parse BibTeX file:
