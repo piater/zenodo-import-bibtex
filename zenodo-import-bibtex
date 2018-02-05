@@ -119,6 +119,9 @@ class Publication:
             data['metadata']['imprint_publisher'] = self.bibentry['publisher']
         if 'address' in self.bibentry:
             data['metadata']['imprint_place'] = self.bibentry['address']
+
+        if args.language:
+            data['metadata']['language'] = args.language
         return data
 
     def create_article(self):
@@ -238,10 +241,13 @@ argparser.add_argument('-t', '--token',
 argparser.add_argument('-a', '--access',
                        choices=['open', 'embargoed', 'restricted', 'closed'],
                        default='closed', help="access right (open='gold')")
-argparser.add_argument('-l', '--label', action='append', metavar="BibTeX_label",
+argparser.add_argument('-b', '--label', action='append', metavar="BibTeX_label",
                        help="BibTeX entry labels to be imported "
                        "(can be specified multiple times; "
                        "if none given, all are imported)")
+argparser.add_argument('-l', '--language',
+                       help="Primary language of the record "
+                       "(ISO 639-2 code, e.g. 'eng' )")
 argparser.add_argument('-EC', action='append', metavar="grant_number",
                        help="European Commission grant number (can be "
                        "specified multiple times)")

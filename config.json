@@ -4,6 +4,5 @@
 			"orcid": "0000-0002-1898-3362" }
   },
 
-  "args":
-  { "pdfdir": "/home/piater/papers" }
+  "args": { "language": "eng" }
 }
