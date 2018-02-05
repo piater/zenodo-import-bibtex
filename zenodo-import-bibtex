@@ -111,7 +111,7 @@ class Publication:
                 [{'identifier': self.bibentry['link'],
                   'relation': 'isIdenticalTo'}]
 
-        if len(args.EC):
+        if args.EC:
             data['metadata']['grants'] = \
                 [{'id': '10.13039/501100000780::' + g} for g in args.EC]
 
